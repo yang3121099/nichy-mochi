@@ -211,19 +211,26 @@ class MeetingTest(IntegrationTest):
         self.send_command('echo FRIENDLY_OUTPUT\n')
         self.wait_for(lambda:'Mochi 完成了' in (self.root/'log').read_text())
         text=(self.root/'log').read_text()
-        self.assertIn('Nichy 提交了：command.sh · 第 1 次提交',text)
-        self.assertIn('Mochi 输出：command.sh · 第 1 次提交',text)
+        self.assertIn('Nichy 提交了：command.sh · ',text)
+        self.assertIn('第 1 次提交',text)
+        self.assertIn('Mochi 输出：command.sh · ',text)
         self.assertLess(text.index('Nichy 提交了'),text.index('Mochi 收到了'))
         events=[line for line in text.splitlines() if line.startswith('[')]
         for line in events:
-            self.assertRegex(line,r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}\] ')
+            self.assertRegex(line,r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] ')
         receipt=json.loads((self.root/'receipt.json').read_text())
         self.assertEqual(receipt['submission'],1)
         with (self.root/'submissions.tsv').open() as stream:
             records=list(csv.DictReader(stream,delimiter='\t'))
-        self.assertEqual(records[0]['提交'],'第 1 次提交')
+        self.assertEqual(records[0]['提交'],receipt['submission_label'])
+        self.assertTrue(records[0]['提交'].endswith('第 1 次提交'))
         self.assertEqual(records[0]['完整版本'],receipt['revision'])
         self.assertEqual(Path(records[0]['任务目录']).name,receipt['job'])
+        self.assertEqual(records[0]['备份'],receipt['backup'])
+        self.assertEqual((self.root/receipt['backup']).read_text(),'echo FRIENDLY_OUTPUT\n')
+        self.assertEqual(receipt['hour_submission'],1)
+        self.assertRegex(receipt['submission_hour'],r'^\d{4}-\d{2}-\d{2}_\d{2}$')
+        self.assertNotIn('+08:00',text)
 
     def test_numbers_survive_restart_and_archived_jobs(self):
         import shutil
@@ -241,6 +248,8 @@ class MeetingTest(IntegrationTest):
         worker.terminate();worker.wait(10)
         shutil.rmtree(self.root/'jobs'/first['job'])
         shutil.rmtree(self.root/'jobs'/second['job'])
+        self.assertEqual((self.root/first['backup']).read_text(),'echo NUMBER_ONE\n')
+        self.assertEqual((self.root/second['backup']).read_text(),'echo NUMBER_ONE\n')
         self.worker()
         self.send_command('echo NUMBER_THREE\n')
         self.wait_for(lambda:json.loads((self.root/'receipt.json').read_text())['submission']==3)

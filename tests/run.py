@@ -15,11 +15,12 @@ def main():
     parser.add_argument('--gpu', action='store_true', help='also exercise an allocated idle CUDA GPU')
     parser.add_argument('--report', help='write a concise JSON test report')
     args = parser.parse_args()
+    from test_extras import ExtrasTest
     from test_client import ClientTest
     from test_dialogue import DialogueTest, HeartbeatRulesTest
     suite = unittest.TestSuite()
     loader = unittest.TestLoader()
-    for cls in [ClientTest, DialogueTest, HeartbeatRulesTest]:
+    for cls in [ClientTest, DialogueTest, HeartbeatRulesTest, ExtrasTest]:
         suite.addTests(loader.loadTestsFromTestCase(cls))
     if sys.platform.startswith('linux'):
         from test_robustness import RobustnessTest

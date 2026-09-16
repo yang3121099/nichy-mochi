@@ -60,8 +60,18 @@ def submission_number(job):
 
 
 def label(spec, job=None):
-    number = submission_number(job) if job is not None else None
-    suffix = '第 {} 次提交'.format(number) if number else '等待 Mochi 编号'
+    suffix = '等待 Mochi 编号'
+    if job is not None:
+        try:
+            from mochi_extras import submission_title
+            registry = optional_json(job.parent.parent/'.submissions.json') or {}
+            if job.name in registry:
+                record = registry[job.name]
+                suffix = submission_title(record)
+                if record.get('note'):
+                    suffix += ' · '+record['note']
+        except (OSError,ValueError,AttributeError,KeyError,TypeError):
+            pass
     return '{} · {}'.format(spec['label'],suffix)
 
 
@@ -93,8 +103,8 @@ def describe(job):
         return 'Mochi 暂时联系不上机器：' + name + ' · 运行结果待确认'
     if state['state'] == 'PENDING':
         if receipt_matches(job, spec):
-            return 'Mochi 收到了：' + name + ' · 排队中'
-        return 'Nichy 提交了：' + name + ' · 等待机器读取'
+            return '🍡 Mochi 收到了：' + name + ' · 排队中'
+        return '📮 Nichy 提交了：' + name + ' · 等待机器读取'
     return text.get(state['state'], 'Mochi 的任务状态待检查：') + name
 
 
@@ -130,7 +140,7 @@ def run_file(root, args):
             core.submit(root, request)
     job = core.job_path(root, output.getvalue().strip())
     spec, _ = details(job)
-    print('Nichy 提交了：' + label(spec,job), flush=True)
+    print('📮 Nichy 提交了：' + label(spec,job), flush=True)
     end = time.monotonic() + 3
     received = False
     last = None
@@ -143,7 +153,7 @@ def run_file(root, args):
             if submission_number(job) is None and time.monotonic() < end:
                 time.sleep(.05)
                 continue
-            print('Mochi 收到了：' + label(spec,job), flush=True)
+            print('🍡 Mochi 收到了：' + label(spec,job), flush=True)
             received = True
         if getattr(args, 'follow', False):
             try:
@@ -303,5 +313,3 @@ def main(argv=None):
 
 if __name__ == '__main__':
     sys.exit(main())
-
-# Codex（OpenAI）贡献：Nichy/Mochi 交互设计、源码实现、GPU 实测与使用文档。

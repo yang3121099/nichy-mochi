@@ -2,7 +2,6 @@
 import argparse
 import contextlib
 import csv
-from datetime import datetime
 import hashlib
 import io
 import json
@@ -16,9 +15,7 @@ import uuid
 import mochi_core as core
 
 
-def timestamp(at=None):
-    value = datetime.now().astimezone() if at is None else datetime.fromtimestamp(at).astimezone()
-    return value.isoformat(sep=' ', timespec='seconds')
+from mochi_extras import timestamp, submission_hour, submission_title, default_calendar, Reminders
 
 
 def read_or(path, default):
@@ -60,6 +57,7 @@ def prepare(root):
     create_once(root/'command.sh', b'# Write your launch commands here, save this file last to submit.\necho "Hello, Mochi"\n')
     create_once(root/'keep_alive.py', Path(__file__).with_name('keep_alive.py').read_bytes())
     create_once(root/'log',b'')
+    create_once(root/'holidays.json',json.dumps(default_calendar(),ensure_ascii=False,indent=2).encode())
 
 
 class MeetingPoint:
@@ -73,6 +71,7 @@ class MeetingPoint:
         self.command_candidate = None
         self.submissions = None
         self.index_dirty = True
+        self.reminders = Reminders(self.root,self.say)
         # First installation treats the existing template as a baseline. Later
         # starts retain the last handled fingerprint, including offline uploads.
         if 'command.sh' not in self.signals:
@@ -174,34 +173,80 @@ class MeetingPoint:
             if not isinstance(loaded,dict) or any(not isinstance(record,dict) for record in loaded.values()):
                 raise ValueError('提交编号索引需要检查')
             self.submissions = loaded
-        records = list(self.submissions.values())
-        numbers = [record['number'] for record in records]
+        numbers = [record['number'] for record in self.submissions.values()]
         if any(type(number) is not int or number < 1 for number in numbers) or len(numbers) != len(set(numbers)):
             raise ValueError('提交编号索引需要检查')
+        updated = {key:dict(record) for key,record in self.submissions.items()}
+        hours = {}
+        identities = set()
+        for record in sorted(updated.values(),key=lambda row:row['number']):
+            if 'note' not in record:
+                record['note'] = self.reminders.command_suffix(record['submitted_at'])
+            hour = submission_hour(record['submitted_at'])
+            if 'hour' not in record:
+                record.update(hour=hour,hour_number=hours.get(hour,0)+1)
+            number = record.get('hour_number')
+            if record['hour'] != hour or type(number) is not int or number < 1 or (hour,number) in identities:
+                raise ValueError('小时提交编号索引需要检查')
+            identities.add((hour,number))
+            hours[hour] = max(hours.get(hour,0),number)
         next_number = max(numbers,default=0)+1
-        changed = False
-        updated = dict(self.submissions)
-        pending = [(core.read_json(job/'request.json'),job) for job in core.jobs(self.root) if job.name not in self.submissions]
+        pending = [(core.read_json(job/'request.json'),job) for job in core.jobs(self.root) if job.name not in updated]
         for spec,job in sorted(pending,key=lambda item:(item[0]['submitted_at'],item[1].name)):
-            updated[job.name] = dict(number=next_number,label=spec['label'],revision=spec['revision'],
-                                             submitted_at=spec['submitted_at'],job=str(job))
+            hour = submission_hour(spec['submitted_at'])
+            hours[hour] = hours.get(hour,0)+1
+            updated[job.name] = dict(number=next_number,hour=hour,hour_number=hours[hour],label=spec['label'],
+                                    revision=spec['revision'],submitted_at=spec['submitted_at'],job=str(job),
+                                    note=self.reminders.command_suffix(spec['submitted_at']))
             next_number += 1
-            changed = True
-        if changed:
-            # Persist identities before displaying them. Keep entries after job
-            # archival so a later submission never reuses a published number.
+        if updated != self.submissions:
+            # Reserve identities before copying backups; a restart reuses the same
+            # hour and sequence even if new submissions arrive during recovery.
             core.write_json(registry,updated)
             self.submissions = updated
             self.index_dirty = True
+        self.backup_commands(registry)
         if self.index_dirty or not (self.root/'submissions.tsv').exists():
             output = io.StringIO()
             writer = csv.writer(output,delimiter='\t',lineterminator='\n')
-            writer.writerow(['提交','提交时间','指令','任务目录','完整版本'])
+            writer.writerow(['提交','提交时间','指令','备份','任务目录','完整版本'])
             for record in sorted(self.submissions.values(),key=lambda row:row['number']):
-                writer.writerow(['第 {} 次提交'.format(record['number']),timestamp(record['submitted_at']),
-                                 record['label'],record['job'],record['revision']])
+                writer.writerow([submission_title(record),timestamp(record['submitted_at']),record['label'],
+                                 record.get('backup') or '',record['job'],record['revision']])
             core.atomic_write(self.root/'submissions.tsv',output.getvalue().encode())
             self.index_dirty = False
+
+    def backup_commands(self, registry):
+        updated = {key:dict(record) for key,record in self.submissions.items()}
+        for job_id,record in updated.items():
+            if 'backup' in record:
+                continue
+            job = self.root/'jobs'/core.valid_id(job_id)
+            if record['label'] != 'command.sh' or not (job/'run.sh').exists():
+                record['backup'] = None
+                continue
+            spec = core.read_json(job/'request.json')
+            if spec.get('source') is not None:
+                record['backup'] = None
+                continue
+            body = (job/'run.sh').read_bytes()
+            if hashlib.sha256(body).hexdigest() != spec['sha256']:
+                record.update(backup=None,backup_error='指令快照校验未通过')
+                continue
+            day,hour = record['hour'].split('_')
+            relative = 'backups/command_{}_{}h_{:03d}.sh'.format(day,hour,record['hour_number'])
+            target = self.root/relative
+            target.parent.mkdir(exist_ok=True,mode=0o700)
+            if target.parent.is_symlink() or target.is_symlink():
+                raise ValueError('指令备份路径不能是符号链接')
+            create_once(target,body)
+            if target.read_bytes() != body:
+                raise ValueError('已有指令备份内容不同，请检查 '+relative)
+            record['backup'] = relative
+        if updated != self.submissions:
+            core.write_json(registry,updated)
+            self.submissions = updated
+            self.index_dirty = True
 
     def update(self, force=False):
         if not force and time.monotonic()-self.last_view<.5:
@@ -209,6 +254,7 @@ class MeetingPoint:
         self.last_view = time.monotonic()
         from nichy import describe, label, show_status, latest
         self.register_submissions()
+        self.reminders.poll()
         changed = False
         for job in core.jobs(self.root):
             if job.name not in self.submissions:
@@ -218,12 +264,12 @@ class MeetingPoint:
             old = self.views.setdefault(job.name,dict(offset=0))
             if not old.get('submitted'):
                 if not old.get('received') and 'state' not in old:
-                    self.say('Nichy 提交了：'+label(spec,job))
+                    self.say('📮 Nichy 提交了：'+label(spec,job))
                 old['submitted'] = True
                 changed = True
             receipt = read_or(job/'received.json',{})
             if receipt.get('state')=='READ' and not old.get('received'):
-                self.say('Mochi 收到了：'+label(spec,job))
+                self.say('🍡 Mochi 收到了：'+label(spec,job))
                 old['received'] = True
                 changed = True
             if state == 'RUNNING' and old.get('state') != state:
@@ -241,7 +287,7 @@ class MeetingPoint:
                     # Bound log mirroring so a noisy task cannot starve supervision.
                     data = source.read(256*1024)
                 if data:
-                    self.say('Mochi 输出：'+label(spec,job))
+                    self.say('📝 Mochi 输出：'+label(spec,job))
                     with (self.root/'log').open('ab') as target:
                         target.write(data)
                     old['offset'] += len(data)
@@ -270,9 +316,12 @@ class MeetingPoint:
             spec = core.read_json(newest/'request.json')
             receipt = dict(job=newest.name,label=spec['label'],revision=spec['revision'],
                 submission=self.submissions[newest.name]['number'],
+                submission_label=submission_title(self.submissions[newest.name]),
+                submission_hour=self.submissions[newest.name]['hour'],
+                hour_submission=self.submissions[newest.name]['hour_number'],
+                backup=self.submissions[newest.name].get('backup'),
+                note=self.submissions[newest.name].get('note',''),
                 state=core.read_json(newest/'status.json')['state'],
                 received=read_or(newest/'received.json',{}))
             if receipt != read_or(self.root/'receipt.json',None):
                 core.write_json(self.root/'receipt.json',receipt)
-
-# Codex（OpenAI）贡献：文件交接与自动回执、稳定提交编号、日志交互及隔离测试。
