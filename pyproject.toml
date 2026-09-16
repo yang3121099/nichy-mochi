@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nichy-mochi"
+version = "3.0.0"
+description = "NichyMochi: hand a file to Mochi, run it on your shared-folder GPU worker."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = []
+
+[project.scripts]
+nichy = "nichy:main"
+
+[tool.setuptools]
+py-modules = ["nichy", "mochi_core", "mochi_worker", "keep_alive"]
