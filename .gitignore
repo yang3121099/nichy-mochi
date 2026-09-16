@@ -25,3 +25,4 @@ worker.json
 keep_alive.json
 .signals.json
 .views.json
+keep_alive.log

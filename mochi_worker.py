@@ -51,6 +51,7 @@ class NichyWorker(Worker):
         local_script=root/'keep_alive.py'
         self.pulse_script=(local_script if local_script.is_file() else Path(__file__).with_name('keep_alive.py')).resolve()
         self.last_display_error=None
+        self.last_pulse_log=None
 
     def probe_visible(self):
         self.probe_next=time.monotonic()+60
@@ -82,6 +83,16 @@ class NichyWorker(Worker):
 
     def pulse_status(self, state, **extra):
         self.heartbeat_state=state
+        if state != self.last_pulse_log:
+            messages={'waiting':'待命','running':'运行中','yielding':'让出 GPU',
+                      'off':'已关闭','config-error':'配置需要检查','no-visible-gpu':'无可见 GPU',
+                      'unavailable':'环境暂不可用','telemetry-unavailable':'指标暂不可用'}
+            try:
+                with (self.root/'keep_alive.log').open('a') as stream:
+                    stream.write('['+time.strftime('%Y-%m-%d %H:%M:%S')+'] 心跳 · '+messages.get(state,state)+'\n')
+                self.last_pulse_log=state
+            except OSError:
+                pass  # A display-file failure must not prevent task cleanup.
         write_json(self.root/'keep_alive.json',dict(state=state,updated_at=time.time(),
                    config=self.pulse_config,**extra))
 

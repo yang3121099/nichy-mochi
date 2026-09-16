@@ -98,11 +98,20 @@ def run_file(root, args):
         raise ValueError('请把程序放在队列目录外，再交给我。')
     interpreter = '"$NICHY_PYTHON" -u' if file.suffix == '.py' else 'bash'
     body = 'cd "$GPUQ_CODE_DIR"\nexec {} {}\n'.format(interpreter, shlex.join(['./'+file.name, *args.file_args]))
+    command_fingerprint = None
+    if command_mode and file == root/'command.sh':
+        from mochi_meeting import file_fingerprint
+        command_fingerprint = file_fingerprint(file)
     with tempfile.TemporaryDirectory(prefix='nichy-submit-') as temp:
         script = Path(temp) / 'run.sh'
         script.write_bytes(file.read_bytes() if command_mode else body.encode())
         cwd = str(Path(os.environ.get('NICHY_CODE_DIR', str(root.parent))).resolve()) if command_mode else str(root)
-        request = argparse.Namespace(script=str(script), id=None, cwd=cwd, timeout=args.timeout,
+        request_id = None
+        if command_fingerprint:
+            if file_fingerprint(file) != command_fingerprint:
+                raise ValueError('command.sh 正在更新，请上传完成后再提交。')
+            request_id = 'command-'+command_fingerprint[:24]
+        request = argparse.Namespace(script=str(script), id=request_id, cwd=cwd, timeout=args.timeout,
                     source=None if command_mode else str(file.parent), snapshot_limit_mib=100, background=False,
                     resume_safe=False, max_preemptions=0, label=file.name)
         output = io.StringIO()
@@ -178,7 +187,7 @@ def show_status(root, args):
     if newest and newest != current:
         print('最新提交 · ' + describe(newest))
     if not newest:
-        print('把文件交给我吧：nichy run hello.py')
+        print('把指令交给我吧：更新 command.sh 即可提交。')
 
 
 def selected_job(root, job_id=None):

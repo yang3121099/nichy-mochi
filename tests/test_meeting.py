@@ -49,7 +49,7 @@ class MeetingTest(IntegrationTest):
     def test_crash_between_publish_and_receipt_does_not_resubmit(self):
         worker=self.worker()
         self.send_command('echo PUBLISHED_ONCE\n')
-        self.wait_for(lambda:(self.root/'.signals.json').exists())
+        self.wait_for(lambda:'RUN' in json.loads((self.root/'.signals.json').read_text()))
         job=json.loads((self.root/'.signals.json').read_text())['RUN']['job']
         self.wait_for(lambda:self.state(job)=='SUCCEEDED')
         worker.terminate();worker.wait(10)
@@ -79,7 +79,7 @@ class MeetingTest(IntegrationTest):
     def test_invalid_shell_rejected_then_corrected(self):
         self.worker()
         self.send_command('if then\n')
-        self.wait_for(lambda:(self.root/'.signals.json').exists())
+        self.wait_for(lambda:'RUN' in json.loads((self.root/'.signals.json').read_text()))
         self.assertEqual(json.loads((self.root/'.signals.json').read_text())['RUN']['state'],'REJECTED')
         self.assertEqual(list((self.root/'jobs').iterdir()),[])
         self.send_command('echo FIXED\n')
@@ -117,3 +117,90 @@ class MeetingTest(IntegrationTest):
         self.wait_for(lambda:'APPENDED' in (self.root/'log').read_text())
         self.assertTrue((self.root/'log').read_text().startswith('EXISTING_LOG\n'))
         self.assertEqual(helper.read_text(),'# existing user helper\n')
+
+    def test_upload_command_without_run_marker(self):
+        self.worker()
+        (self.root/'command.sh').write_text('echo AUTO_UPLOAD\nsleep 2\n')
+        self.wait_for(lambda:(self.root/'receipt.json').exists())
+        job=json.loads((self.root/'receipt.json').read_text())['job']
+        self.wait_for(lambda:self.state(job)=='SUCCEEDED')
+        self.wait_for(lambda:'AUTO_UPLOAD' in (self.root/'log').read_text())
+        self.assertFalse((self.root/'RUN').exists())
+        self.assertEqual(json.loads((self.root/'worker.json').read_text())['state'],'IDLE')
+
+    def test_partial_upload_and_rename(self):
+        self.worker()
+        temporary=self.root/'command.sh.upload'
+        temporary.write_text('echo INCOMPLETE\n')
+        time.sleep(2.5)
+        self.assertEqual(list((self.root/'jobs').iterdir()),[])
+        temporary.write_text('echo COMPLETE_UPLOAD\n')
+        temporary.replace(self.root/'command.sh')
+        self.wait_for(lambda:(self.root/'receipt.json').exists())
+        self.wait_for(lambda:'COMPLETE_UPLOAD' in (self.root/'log').read_text())
+        self.assertNotIn('INCOMPLETE',(self.root/'log').read_text())
+
+    def test_auto_restart_and_offline_upload(self):
+        worker=self.worker()
+        (self.root/'command.sh').write_text('echo FIRST_AUTO\n')
+        self.wait_for(lambda:(self.root/'receipt.json').exists())
+        job=json.loads((self.root/'receipt.json').read_text())['job']
+        self.wait_for(lambda:self.state(job)=='SUCCEEDED')
+        worker.terminate();worker.wait(10)
+        worker=self.worker();time.sleep(3)
+        self.assertEqual(len(list((self.root/'jobs').iterdir())),1)
+        worker.terminate();worker.wait(10)
+        (self.root/'command.sh').write_text('echo OFFLINE_UPLOAD\n')
+        self.worker()
+        self.wait_for(lambda:'OFFLINE_UPLOAD' in (self.root/'log').read_text())
+        self.assertEqual(len(list((self.root/'jobs').iterdir())),2)
+
+    def test_auto_publication_receipt_crash_gap(self):
+        worker=self.worker()
+        baseline=json.loads((self.root/'.signals.json').read_text())
+        (self.root/'command.sh').write_text('echo EXACTLY_ONCE\n')
+        self.wait_for(lambda:(self.root/'receipt.json').exists())
+        job=json.loads((self.root/'receipt.json').read_text())['job']
+        self.wait_for(lambda:self.state(job)=='SUCCEEDED')
+        worker.terminate();worker.wait(10)
+        (self.root/'.signals.json').write_text(json.dumps(baseline))
+        self.worker();time.sleep(3)
+        self.assertEqual(len(list((self.root/'jobs').iterdir())),1)
+        self.assertEqual((self.root/'log').read_text().count('EXACTLY_ONCE'),1)
+
+    def test_auto_same_command_reupload_is_new_job(self):
+        self.worker()
+        command=self.root/'command.sh'
+        command.write_text('echo SAME_COMMAND\n')
+        self.wait_for(lambda:(self.root/'receipt.json').exists())
+        job=json.loads((self.root/'receipt.json').read_text())['job']
+        self.wait_for(lambda:self.state(job)=='SUCCEEDED')
+        command.write_text('echo SAME_COMMAND\n')
+        self.wait_for(lambda:len(list((self.root/'jobs').iterdir()))==2)
+        self.wait_for(lambda:(self.root/'log').read_text().count('SAME_COMMAND')==2)
+
+    def test_auto_invalid_shell_then_corrected(self):
+        self.worker()
+        (self.root/'command.sh').write_text('if then\n')
+        self.wait_for(lambda:json.loads((self.root/'.signals.json').read_text())['command.sh']['state']=='REJECTED')
+        self.assertEqual(list((self.root/'jobs').iterdir()),[])
+        self.wait_for(lambda:'未接收' in (self.root/'status.txt').read_text())
+        (self.root/'command.sh').write_text('echo REPAIRED_UPLOAD\n')
+        self.wait_for(lambda:'REPAIRED_UPLOAD' in (self.root/'log').read_text())
+
+    def test_cli_command_does_not_duplicate_auto_upload(self):
+        self.worker()
+        (self.root/'command.sh').write_text('echo ONE_CLI_COMMAND\n')
+        env=dict(self.client_env,NICHY_HOME=str(self.root),NICHY_CLIENT_PYTHON=self.client_python)
+        result=subprocess.run(['bash',str(APP.parent/'submit.sh')],env=env,cwd=self.base,
+                         capture_output=True,text=True,timeout=12)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        time.sleep(3)
+        self.assertEqual(len(list((self.root/'jobs').iterdir())),1)
+
+    def test_heartbeat_has_its_own_quiet_log(self):
+        self.worker()
+        log=self.root/'keep_alive.log'
+        self.assertIn('心跳 · 已关闭',log.read_text())
+        before=log.read_text();time.sleep(1)
+        self.assertEqual(log.read_text(),before)
