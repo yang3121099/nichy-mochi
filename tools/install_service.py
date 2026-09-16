@@ -1,4 +1,4 @@
-"""Administrator helper for an existing Linux Supervisor installation."""
+"""Optional helper for an existing Linux Supervisor installation."""
 import argparse
 import os
 from pathlib import Path
@@ -14,7 +14,7 @@ from mochi_core import atomic_write
 
 
 def main():
-    parser = argparse.ArgumentParser(description='安装 NichyMochi 的 Supervisor 服务（管理员使用一次）')
+    parser = argparse.ArgumentParser(description='安装 NichyMochi 的 Supervisor 服务')
     parser.add_argument('--home', help='所选的共享队列位置；默认读取 NICHY_HOME')
     args = parser.parse_args()
     ctl = shutil.which('supervisorctl')
@@ -30,7 +30,7 @@ def main():
     conf = conf_dir / 'nichy-mochi.conf'
     if conf.exists() or wrapper.exists():
         raise ValueError('服务文件已存在，请先检查现有服务；不会覆盖。')
-    # These are generated from the teacher's chosen paths and Python environment.
+    # Generated from the selected paths and Python environment.
     body = '#!/bin/bash\nset -e\n'
     utils = scripts / 'utils'
     for name in ['logging.sh', 'environment.sh']:

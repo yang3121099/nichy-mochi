@@ -9,6 +9,7 @@ import time
 import uuid
 from mochi_core import Worker, write_json, atomic_write, set_state
 from keep_alive import gpu_stats, eligible
+from mochi_meeting import MeetingPoint
 
 DEFAULTS = dict(enabled=True, interval=1800, seconds=10, idle_for=30, duty=.25)
 
@@ -46,11 +47,15 @@ class NichyWorker(Worker):
         self.quiet_devices=set()
         self.probe_next=0.0
         self.heartbeat_state='off' if not c['enabled'] else 'waiting'
+        self.meeting=MeetingPoint(self)
+        local_script=root/'keep_alive.py'
+        self.pulse_script=(local_script if local_script.is_file() else Path(__file__).with_name('keep_alive.py')).resolve()
+        self.last_display_error=None
 
     def probe_visible(self):
         self.probe_next=time.monotonic()+60
         try:
-            r=subprocess.run([sys.executable,str(Path(__file__).with_name('keep_alive.py')),'--probe'],
+            r=subprocess.run([sys.executable,str(self.pulse_script),'--probe'],
                              capture_output=True,text=True,check=True,timeout=15)
             self.visible=json.loads(r.stdout)
             if not self.visible:self.pulse_status('no-visible-gpu')
@@ -58,11 +63,22 @@ class NichyWorker(Worker):
             self.pulse_status('unavailable')
 
     def heartbeat(self,force=False):
+        if self.state in {'IDLE','RUNNING'}:
+            self.meeting.poll()
         if not self.config_reported:
+            self.meeting.say('Mochi 已就位：'+str(self.root))
             self.pulse_status('config-error' if self.config_error else self.heartbeat_state,
                               error=self.config_error)
             self.config_reported=True
         super().heartbeat(force)
+        try:
+            self.meeting.update(force)
+        except (OSError,ValueError,KeyError,TypeError) as exc:
+            # Display files are derived data; a broken display must not stop cleanup.
+            detail=str(exc)
+            if detail != self.last_display_error:
+                print('Mochi 状态显示暂不可用：'+detail,flush=True)
+                self.last_display_error=detail
 
     def pulse_status(self, state, **extra):
         self.heartbeat_state=state
@@ -112,7 +128,7 @@ class NichyWorker(Worker):
         uid=min((card for card in candidates if card['uuid'] in stable),key=lambda x:x['utilization'])['uuid']
         parent=self.root/'pulses';parent.mkdir(exist_ok=True)
         job=parent/('pulse-'+uuid.uuid4().hex[:12]);job.mkdir(mode=0o700)
-        body=('exec "$NICHY_PYTHON" "$NICHY_APP/keep_alive.py" --uuid '+shlex.quote(uid)+
+        body=('exec "$NICHY_PYTHON" '+shlex.quote(str(self.pulse_script))+' --uuid '+shlex.quote(uid)+
               ' --seconds '+str(c['seconds'])+' --duty '+str(c['duty'])+'\n').encode()
         spec=dict(id=job.name,label='GPU 心跳',pulse=True,pulse_gpu_uuid=uid,background=True,
                   resume_safe=False,timeout=c['seconds']+30,cwd=str(job),sha256=hashlib.sha256(body).hexdigest(),

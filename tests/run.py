@@ -24,8 +24,10 @@ def main():
     if sys.platform.startswith('linux'):
         from test_robustness import RobustnessTest
         from test_integration import IntegrationTest
+        from test_meeting import MeetingTest
         suite.addTests(loader.loadTestsFromTestCase(RobustnessTest))
         suite.addTests(IntegrationTest(name) for name in IntegrationTest.__dict__ if name.startswith('test_'))
+        suite.addTests(MeetingTest(name) for name in MeetingTest.__dict__ if name.startswith('test_'))
     if args.gpu:
         if not sys.platform.startswith('linux'):
             parser.error('--gpu requires Linux')

@@ -23,7 +23,7 @@ import uuid
 import select
 
 TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "INTERRUPTED", "UNKNOWN", "PREEMPTED"}
-VERSION = "3.0.0"
+VERSION = "3.1.0"
 
 
 def read_json(path):
@@ -424,8 +424,10 @@ class Worker:
                            NICHY_APP=str(Path(__file__).resolve().parent),
                            NICHY_JOB_ID=job.name, NICHY_REVISION=spec.get('revision', ''),
                            NICHY_OUTPUT_DIR=str(job / 'results'))
+                env['PATH'] = str(Path(sys.executable).parent) + os.pathsep + env.get('PATH', '')
                 if spec.get("pulse"):
                     env["CUDA_VISIBLE_DEVICES"] = spec["pulse_gpu_uuid"]
+                    env['PYTHONPATH'] = str(Path(__file__).resolve().parent) + os.pathsep + env.get('PYTHONPATH', '')
                 self.guard_token = uuid.uuid4().hex
                 local_limit = min(limit, max(.001, self.args.max_runtime - (time.monotonic() - self.born))) if self.args.max_runtime else limit
                 with (job / "run.log").open("ab", buffering=0) as log:

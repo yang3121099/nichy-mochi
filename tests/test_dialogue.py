@@ -1,4 +1,4 @@
-"""Portable behavior tests for the child-facing command and GPU selection rules."""
+"""Portable behavior tests for the command and GPU selection rules."""
 import argparse
 import contextlib
 import io
@@ -19,6 +19,24 @@ from mochi_worker import NichyWorker
 
 
 class DialogueTest(unittest.TestCase):
+    def test_missing_default_falls_back_without_creating_users_path(self):
+        original=Path.is_dir
+        def is_dir(path):
+            return False if str(path)=='/users/nichy/code/start' else original(path)
+        with tempfile.TemporaryDirectory() as directory:
+            module=Path(directory)/'nichy.py'
+            errors=io.StringIO()
+            with mock.patch.dict(os.environ,{},clear=True),mock.patch.object(nichy,'__file__',str(module)),mock.patch.object(Path,'is_dir',is_dir),contextlib.redirect_stderr(errors):
+                chosen=nichy.queue_root()
+            self.assertEqual(chosen,(Path(directory)/'.nichy').resolve())
+            self.assertIn('暂用',errors.getvalue())
+
+    def test_explicit_home_and_code_directory_override_default(self):
+        with mock.patch.dict(os.environ,{'NICHY_HOME':str(self.base/'explicit'),'NICHY_CODE_DIR':str(self.base/'code')}):
+            self.assertEqual(nichy.queue_root(),(self.base/'explicit').resolve())
+            self.assertEqual(nichy.queue_root(str(self.base/'argument')),(self.base/'argument').resolve())
+        with mock.patch.dict(os.environ,{'NICHY_CODE_DIR':str(self.base/'code')},clear=True):
+            self.assertEqual(nichy.queue_root(),(self.base/'code/start').resolve())
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.base = Path(self.temp.name)

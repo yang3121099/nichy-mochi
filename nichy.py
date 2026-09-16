@@ -16,7 +16,17 @@ import mochi_core as core
 
 
 def queue_root(value=None):
-    root = Path(value or os.environ.get('NICHY_HOME') or Path(__file__).resolve().parent / '.nichy').expanduser().resolve()
+    chosen = value or os.environ.get('NICHY_HOME')
+    if not chosen and os.environ.get('NICHY_CODE_DIR'):
+        chosen = Path(os.environ['NICHY_CODE_DIR']) / 'start'
+    if not chosen:
+        preferred = Path('/users/nichy/code/start')
+        if preferred.is_dir():
+            chosen = preferred
+        else:
+            chosen = Path(__file__).resolve().parent / '.nichy'
+            print('Mochi 没找到 /users/nichy/code/start，暂用 '+str(chosen)+'。',file=sys.stderr)
+    root = Path(chosen).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     for name in ('jobs', 'staging'):
         (root / name).mkdir(exist_ok=True, mode=0o700)
@@ -63,7 +73,7 @@ def describe(job):
         'CANCELLED': 'Mochi 已停下：',
         'TIMED_OUT': 'Mochi 等到时间上限了：',
         'INTERRUPTED': 'Mochi 的运行中断了：',
-        'UNKNOWN': 'Mochi 需要老师检查这次运行：',
+        'UNKNOWN': 'Mochi 需要你检查这次运行：',
         'PREEMPTED': 'Mochi 暂停了后台任务：',
     }
     if state['state'] == 'RUNNING':
@@ -81,15 +91,19 @@ def run_file(root, args):
     file = Path(args.file).expanduser().resolve(strict=True)
     if not file.is_file() or file.suffix not in {'.py', '.sh'}:
         raise ValueError('请给我一个 .py 或 .sh 文件。')
-    if root == file.parent or root in file.parents:
+    command_mode = getattr(args, 'command_file', False)
+    if command_mode and file.suffix != '.sh':
+        raise ValueError('指令文件需要使用 .sh。')
+    if not command_mode and (root == file.parent or root in file.parents):
         raise ValueError('请把程序放在队列目录外，再交给我。')
     interpreter = '"$NICHY_PYTHON" -u' if file.suffix == '.py' else 'bash'
     body = 'cd "$GPUQ_CODE_DIR"\nexec {} {}\n'.format(interpreter, shlex.join(['./'+file.name, *args.file_args]))
     with tempfile.TemporaryDirectory(prefix='nichy-submit-') as temp:
         script = Path(temp) / 'run.sh'
-        script.write_text(body, encoding='utf-8')
-        request = argparse.Namespace(script=str(script), id=None, cwd=str(root), timeout=args.timeout,
-                    source=str(file.parent), snapshot_limit_mib=100, background=False,
+        script.write_bytes(file.read_bytes() if command_mode else body.encode())
+        cwd = str(Path(os.environ.get('NICHY_CODE_DIR', str(root.parent))).resolve()) if command_mode else str(root)
+        request = argparse.Namespace(script=str(script), id=None, cwd=cwd, timeout=args.timeout,
+                    source=None if command_mode else str(file.parent), snapshot_limit_mib=100, background=False,
                     resume_safe=False, max_preemptions=0, label=file.name)
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -100,12 +114,33 @@ def run_file(root, args):
     end = time.monotonic() + 3
     received = False
     last = None
+    log_offset = 0
+    import codecs
+    decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
     while True:
         _, state = details(job)
         if not received and receipt_matches(job, spec):
             print('Mochi 收到了：' + label(spec), flush=True)
             received = True
+        if getattr(args, 'follow', False):
+            try:
+                with (job/'run.log').open('rb') as log:
+                    log.seek(log_offset)
+                    data = log.read(256*1024)
+                    log_offset += len(data)
+                print(decoder.decode(data), end='', flush=True)
+            except FileNotFoundError:
+                pass
         if state['state'] in core.TERMINAL:
+            if getattr(args, 'follow', False):
+                try:
+                    with (job/'run.log').open('rb') as log:
+                        log.seek(log_offset)
+                        while data := log.read(256*1024):
+                            print(decoder.decode(data), end='', flush=True)
+                except FileNotFoundError:
+                    pass
+                print(decoder.decode(b'',final=True),end='',flush=True)
             print(describe(job), flush=True)
             return 0 if state['state'] == 'SUCCEEDED' else 1
         if args.wait and state['state'] == 'RUNNING' and last != 'RUNNING':
@@ -187,6 +222,8 @@ def serve(root, args):
     if not sys.platform.startswith('linux'):
         raise ValueError('请在 Linux GPU 机器上启动 Mochi；这里可以提交和查看任务。')
     from mochi_worker import NichyWorker
+    from mochi_meeting import prepare
+    prepare(root)
     worker = NichyWorker(root, argparse.Namespace(poll=.2, grace=2, max_runtime=0,
                                                 idle_exit=0, background_after=30))
     worker.run()
@@ -196,29 +233,37 @@ def serve(root, args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description='NichyMochi · 奶茄团子，把文件交给 Mochi。')
     parser.add_argument('--version', action='version', version='NichyMochi ' + core.VERSION)
-    parser.add_argument('--home', help='共享队列目录（管理员设置）')
+    parser.add_argument('--home', help='共享接头点，默认 /users/nichy/code/start')
     sub = parser.add_subparsers(dest='command')
     p = sub.add_parser('run', help='把文件交给 Mochi')
     p.add_argument('--wait', action='store_true', help='一直看到运行结束')
+    p.add_argument('--follow', action='store_true', help='等待结束并显示实时输出')
+    p.add_argument('--command-file', action='store_true', help='运行指令文件；只快照 shell 指令')
     p.add_argument('--wait-limit', type=core.number, default=86400, help=argparse.SUPPRESS)
     p.add_argument('--timeout', type=core.number, default=86400, help='运行时间上限，默认一天')
     p.add_argument('file')
     p.add_argument('file_args', nargs=argparse.REMAINDER, help='传给文件的参数')
     p = sub.add_parser('status', help='看看进度（直接输入 nichy 也可以）')
-    p.add_argument('--json', action='store_true', help='管理员使用的完整状态')
+    p.add_argument('--json', action='store_true', help='完整状态')
     p = sub.add_parser('log', help='看看最新提交的运行输出')
     p.add_argument('id', nargs='?', help='可选：查看某次任务')
     p.add_argument('--lines', type=int, default=100)
     p = sub.add_parser('stop', help='停下当前任务，机器继续待命')
     p.add_argument('id', nargs='?', help='可选：停止某次任务')
-    sub.add_parser('serve', help='管理员：在 GPU 上启动 Mochi')
+    sub.add_parser('serve', help='在 GPU 上启动监听进程')
+    sub.add_parser('home', help='显示实际接头点路径')
     args = parser.parse_args(argv)
+    if getattr(args,'follow',False):
+        args.wait = True
     if getattr(args, 'timeout', 1) <= 0 or getattr(args, 'lines', 1) <= 0:
         parser.error('运行时间和日志行数需要大于 0。')
     os.umask(0o077)
     try:
         root = queue_root(args.home)
         command = args.command or 'status'
+        if command == 'home':
+            print(root)
+            return 0
         if args.command is None:
             args.json = False
         result = {'run': run_file, 'status': show_status, 'log': show_log,
