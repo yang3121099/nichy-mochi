@@ -9,7 +9,7 @@ import time
 import uuid
 from mochi_core import Worker, write_json, atomic_write, set_state
 from keep_alive import gpu_stats, eligible
-from mochi_meeting import MeetingPoint
+from mochi_meeting import MeetingPoint, timestamp
 
 DEFAULTS = dict(enabled=True, interval=1800, seconds=10, idle_for=30, duty=.25)
 
@@ -89,7 +89,7 @@ class NichyWorker(Worker):
                       'unavailable':'环境暂不可用','telemetry-unavailable':'指标暂不可用'}
             try:
                 with (self.root/'keep_alive.log').open('a') as stream:
-                    stream.write('['+time.strftime('%Y-%m-%d %H:%M:%S')+'] 心跳 · '+messages.get(state,state)+'\n')
+                    stream.write('['+timestamp()+'] Mochi 心跳 · '+messages.get(state,state)+'\n')
                 self.last_pulse_log=state
             except OSError:
                 pass  # A display-file failure must not prevent task cleanup.

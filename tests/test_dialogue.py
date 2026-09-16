@@ -59,7 +59,7 @@ class DialogueTest(unittest.TestCase):
 
     def test_offline_never_claims_machine_received(self):
         job, text = self.submit()
-        self.assertIn('Mochi 记下了：hello.py · 版本 ', text)
+        self.assertIn('Nichy 提交了：hello.py · 等待 Mochi 编号', text)
         self.assertNotIn('Mochi 收到了', text)
         self.assertIn('机器还没读取', text)
         self.assertFalse((job / 'received.json').exists())

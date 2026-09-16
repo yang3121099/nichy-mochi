@@ -26,3 +26,5 @@ keep_alive.json
 .signals.json
 .views.json
 keep_alive.log
+.submissions.json
+submissions.tsv

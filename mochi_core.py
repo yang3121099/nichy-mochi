@@ -23,7 +23,7 @@ import uuid
 import select
 
 TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "INTERRUPTED", "UNKNOWN", "PREEMPTED"}
-VERSION = "3.2.0"
+VERSION = "3.3.0"
 
 
 def read_json(path):

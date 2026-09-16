@@ -73,7 +73,7 @@ class IntegrationTest(QueueTest):
     def test_run_receipt_and_completion_dialogue(self):
         self.worker()
         result=self.nichy('run','--wait',self.program('print("你好 Mochi")\n'))
-        self.assertIn('Mochi 收到了：hello.py · 版本 ',result.stdout)
+        self.assertIn('Mochi 收到了：hello.py · ',result.stdout)
         self.assertIn('Mochi 完成了 ✓',result.stdout)
         self.assertIn('你好 Mochi',self.nichy('log').stdout)
         job=self.newest()
@@ -96,7 +96,7 @@ class IntegrationTest(QueueTest):
         self.assertNotEqual(old_revision,new_revision)
         self.assertEqual(self.state(new.name),'PENDING')
         status=self.nichy().stdout
-        self.assertIn(old_revision,status);self.assertIn(new_revision,status)
+        self.assertIn('第 1 次提交',status);self.assertIn('第 2 次提交',status)
         self.assertIn('排队中',status)
         self.nichy('stop')
         self.wait_for(lambda:self.state(new.name)=='SUCCEEDED')

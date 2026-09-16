@@ -50,8 +50,19 @@ def details(job):
     return spec, core.read_json(job / 'status.json')
 
 
-def label(spec):
-    return '{} · 版本 {}'.format(spec['label'], spec['revision'][:8])
+def submission_number(job):
+    try:
+        registry = optional_json(job.parent.parent/'.submissions.json') or {}
+        number = registry.get(job.name,{}).get('number')
+        return number if type(number) is int and number > 0 else None
+    except (OSError,ValueError,AttributeError):
+        return None
+
+
+def label(spec, job=None):
+    number = submission_number(job) if job is not None else None
+    suffix = '第 {} 次提交'.format(number) if number else '等待 Mochi 编号'
+    return '{} · {}'.format(spec['label'],suffix)
 
 
 def online(worker):
@@ -66,7 +77,7 @@ def receipt_matches(job, spec):
 
 def describe(job):
     spec, state = details(job)
-    name = label(spec)
+    name = label(spec,job)
     text = {
         'SUCCEEDED': 'Mochi 完成了 ✓：',
         'FAILED': 'Mochi 遇到问题了：',
@@ -83,7 +94,7 @@ def describe(job):
     if state['state'] == 'PENDING':
         if receipt_matches(job, spec):
             return 'Mochi 收到了：' + name + ' · 排队中'
-        return 'Mochi 记下了：' + name + ' · 等待机器读取'
+        return 'Nichy 提交了：' + name + ' · 等待机器读取'
     return text.get(state['state'], 'Mochi 的任务状态待检查：') + name
 
 
@@ -119,7 +130,7 @@ def run_file(root, args):
             core.submit(root, request)
     job = core.job_path(root, output.getvalue().strip())
     spec, _ = details(job)
-    print('Mochi 记下了：' + label(spec), flush=True)
+    print('Nichy 提交了：' + label(spec,job), flush=True)
     end = time.monotonic() + 3
     received = False
     last = None
@@ -129,7 +140,10 @@ def run_file(root, args):
     while True:
         _, state = details(job)
         if not received and receipt_matches(job, spec):
-            print('Mochi 收到了：' + label(spec), flush=True)
+            if submission_number(job) is None and time.monotonic() < end:
+                time.sleep(.05)
+                continue
+            print('Mochi 收到了：' + label(spec,job), flush=True)
             received = True
         if getattr(args, 'follow', False):
             try:
@@ -221,10 +235,11 @@ def stop_task(root, args):
         return
     spec, state = details(job)
     if state['state'] in core.TERMINAL:
-        print('Mochi 已经结束这次任务了：' + label(spec))
+        print('Mochi 已经结束这次任务了：' + label(spec,job))
     else:
+        print('Nichy 请求停止：'+label(spec,job))
         core.atomic_write(job / 'CANCEL', b'cancel\n')
-        print('Mochi 收到停止请求：' + label(spec) + ' · 正在收尾')
+        print('Mochi 收到停止请求：' + label(spec,job) + ' · 正在收尾')
 
 
 def serve(root, args):
@@ -288,3 +303,5 @@ def main(argv=None):
 
 if __name__ == '__main__':
     sys.exit(main())
+
+# Codex（OpenAI）贡献：Nichy/Mochi 交互设计、源码实现、GPU 实测与使用文档。

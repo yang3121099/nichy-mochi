@@ -70,7 +70,7 @@ class MeetingTest(IntegrationTest):
         newer=self.newest()
         self.wait_for(lambda:(newer/'received.json').exists())
         self.assertEqual(self.state(newer.name),'PENDING')
-        self.assertIn(old['revision'][:8],(self.root/'status.txt').read_text())
+        self.wait_for(lambda:'第 1 次提交' in (self.root/'status.txt').read_text())
         (self.root/'STOP').touch()
         self.wait_for(lambda:self.state(newer.name)=='SUCCEEDED')
         self.assertEqual(self.state(old['job']),'CANCELLED')
@@ -204,3 +204,54 @@ class MeetingTest(IntegrationTest):
         self.assertIn('心跳 · 已关闭',log.read_text())
         before=log.read_text();time.sleep(1)
         self.assertEqual(log.read_text(),before)
+
+    def test_names_full_timestamps_and_searchable_numbers(self):
+        import csv
+        self.worker()
+        self.send_command('echo FRIENDLY_OUTPUT\n')
+        self.wait_for(lambda:'Mochi 完成了' in (self.root/'log').read_text())
+        text=(self.root/'log').read_text()
+        self.assertIn('Nichy 提交了：command.sh · 第 1 次提交',text)
+        self.assertIn('Mochi 输出：command.sh · 第 1 次提交',text)
+        self.assertLess(text.index('Nichy 提交了'),text.index('Mochi 收到了'))
+        events=[line for line in text.splitlines() if line.startswith('[')]
+        for line in events:
+            self.assertRegex(line,r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}\] ')
+        receipt=json.loads((self.root/'receipt.json').read_text())
+        self.assertEqual(receipt['submission'],1)
+        with (self.root/'submissions.tsv').open() as stream:
+            records=list(csv.DictReader(stream,delimiter='\t'))
+        self.assertEqual(records[0]['提交'],'第 1 次提交')
+        self.assertEqual(records[0]['完整版本'],receipt['revision'])
+        self.assertEqual(Path(records[0]['任务目录']).name,receipt['job'])
+
+    def test_numbers_survive_restart_and_archived_jobs(self):
+        import shutil
+        worker=self.worker()
+        self.send_command('echo NUMBER_ONE\n')
+        self.wait_for(lambda:'Mochi 完成了' in (self.root/'log').read_text())
+        first=json.loads((self.root/'receipt.json').read_text())
+        worker.terminate();worker.wait(10)
+        worker=self.worker()
+        self.send_command('echo NUMBER_ONE\n')
+        self.wait_for(lambda:json.loads((self.root/'receipt.json').read_text())['submission']==2)
+        second=json.loads((self.root/'receipt.json').read_text())
+        self.wait_for(lambda:self.state(second['job'])=='SUCCEEDED')
+        self.assertEqual(first['revision'],second['revision'])
+        worker.terminate();worker.wait(10)
+        shutil.rmtree(self.root/'jobs'/first['job'])
+        shutil.rmtree(self.root/'jobs'/second['job'])
+        self.worker()
+        self.send_command('echo NUMBER_THREE\n')
+        self.wait_for(lambda:json.loads((self.root/'receipt.json').read_text())['submission']==3)
+        self.assertIn('第 3 次提交',(self.root/'submissions.tsv').read_text())
+
+    def test_concurrent_submissions_have_unique_numbers(self):
+        from concurrent.futures import ThreadPoolExecutor
+        self.worker()
+        file=self.program('print("parallel submission")')
+        with ThreadPoolExecutor(max_workers=4) as clients:
+            list(clients.map(lambda _:self.nichy('run',file),range(4)))
+        self.wait_for(lambda:len(json.loads((self.root/'.submissions.json').read_text()))==4)
+        records=json.loads((self.root/'.submissions.json').read_text())
+        self.assertEqual(sorted(row['number'] for row in records.values()),[1,2,3,4])

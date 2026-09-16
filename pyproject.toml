@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nichy-mochi"
-version = "3.2.0"
+version = "3.3.0"
 description = "NichyMochi: hand a file to Mochi, run it on your shared-folder GPU worker."
 readme = "README.md"
 requires-python = ">=3.9"

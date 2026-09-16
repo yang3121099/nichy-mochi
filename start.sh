@@ -39,3 +39,5 @@ if not config.exists():
 PY
 
 exec "$NICHY_PYTHON" "$APP_DIR/nichy.py" --home "$NICHY_HOME" serve
+
+# Codex（OpenAI）：协助设计并实现文件监听、GPU 任务交接、日志反馈与隔离测试。

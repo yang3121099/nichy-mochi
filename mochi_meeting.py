@@ -1,6 +1,8 @@
 """Shared-folder controls and an automatically updated, plain-file conversation."""
 import argparse
 import contextlib
+import csv
+from datetime import datetime
 import hashlib
 import io
 import json
@@ -12,6 +14,11 @@ import time
 import uuid
 
 import mochi_core as core
+
+
+def timestamp(at=None):
+    value = datetime.now().astimezone() if at is None else datetime.fromtimestamp(at).astimezone()
+    return value.isoformat(sep=' ', timespec='seconds')
 
 
 def read_or(path, default):
@@ -64,6 +71,8 @@ class MeetingPoint:
         self.last_view = 0.0
         self.last_status = None
         self.command_candidate = None
+        self.submissions = None
+        self.index_dirty = True
         # First installation treats the existing template as a baseline. Later
         # starts retain the last handled fingerprint, including offline uploads.
         if 'command.sh' not in self.signals:
@@ -71,7 +80,7 @@ class MeetingPoint:
 
     def say(self, text):
         with (self.root/'log').open('ab') as stream:
-            stream.write(('\n['+time.strftime('%H:%M:%S')+'] '+text+'\n').encode())
+            stream.write(('\n['+timestamp()+'] '+text+'\n').encode())
 
     def signal(self, name):
         fingerprint = file_fingerprint(self.root/name)
@@ -124,7 +133,8 @@ class MeetingPoint:
                     output = io.StringIO()
                     with contextlib.redirect_stdout(output):
                         stop_task(self.root,argparse.Namespace(id=None))
-                    self.say(output.getvalue().strip())
+                    for line in output.getvalue().splitlines():
+                        self.say(line)
                     record['state'] = 'APPLIED'
             except (OSError,ValueError,KeyError,subprocess.SubprocessError) as exc:
                 record.update(state='REJECTED',error=str(exc))
@@ -157,23 +167,67 @@ class MeetingPoint:
         self.remember('command.sh',record)
         self.command_candidate = None
 
+    def register_submissions(self):
+        registry = self.root/'.submissions.json'
+        if self.submissions is None:
+            loaded = core.read_json(registry) if registry.exists() else {}
+            if not isinstance(loaded,dict) or any(not isinstance(record,dict) for record in loaded.values()):
+                raise ValueError('提交编号索引需要检查')
+            self.submissions = loaded
+        records = list(self.submissions.values())
+        numbers = [record['number'] for record in records]
+        if any(type(number) is not int or number < 1 for number in numbers) or len(numbers) != len(set(numbers)):
+            raise ValueError('提交编号索引需要检查')
+        next_number = max(numbers,default=0)+1
+        changed = False
+        updated = dict(self.submissions)
+        pending = [(core.read_json(job/'request.json'),job) for job in core.jobs(self.root) if job.name not in self.submissions]
+        for spec,job in sorted(pending,key=lambda item:(item[0]['submitted_at'],item[1].name)):
+            updated[job.name] = dict(number=next_number,label=spec['label'],revision=spec['revision'],
+                                             submitted_at=spec['submitted_at'],job=str(job))
+            next_number += 1
+            changed = True
+        if changed:
+            # Persist identities before displaying them. Keep entries after job
+            # archival so a later submission never reuses a published number.
+            core.write_json(registry,updated)
+            self.submissions = updated
+            self.index_dirty = True
+        if self.index_dirty or not (self.root/'submissions.tsv').exists():
+            output = io.StringIO()
+            writer = csv.writer(output,delimiter='\t',lineterminator='\n')
+            writer.writerow(['提交','提交时间','指令','任务目录','完整版本'])
+            for record in sorted(self.submissions.values(),key=lambda row:row['number']):
+                writer.writerow(['第 {} 次提交'.format(record['number']),timestamp(record['submitted_at']),
+                                 record['label'],record['job'],record['revision']])
+            core.atomic_write(self.root/'submissions.tsv',output.getvalue().encode())
+            self.index_dirty = False
+
     def update(self, force=False):
         if not force and time.monotonic()-self.last_view<.5:
             return
         self.last_view = time.monotonic()
         from nichy import describe, label, show_status, latest
+        self.register_submissions()
         changed = False
         for job in core.jobs(self.root):
+            if job.name not in self.submissions:
+                continue  # Registered on the next cycle if published during this update.
             spec = core.read_json(job/'request.json')
             state = core.read_json(job/'status.json')['state']
             old = self.views.setdefault(job.name,dict(offset=0))
+            if not old.get('submitted'):
+                if not old.get('received') and 'state' not in old:
+                    self.say('Nichy 提交了：'+label(spec,job))
+                old['submitted'] = True
+                changed = True
             receipt = read_or(job/'received.json',{})
             if receipt.get('state')=='READ' and not old.get('received'):
-                self.say('Mochi 收到了：'+label(spec))
+                self.say('Mochi 收到了：'+label(spec,job))
                 old['received'] = True
                 changed = True
             if state == 'RUNNING' and old.get('state') != state:
-                self.say('Mochi 正在运行：'+label(spec))
+                self.say('Mochi 正在运行：'+label(spec,job))
                 old['state'] = state
                 changed = True
             log = job/'run.log'
@@ -187,7 +241,7 @@ class MeetingPoint:
                     # Bound log mirroring so a noisy task cannot starve supervision.
                     data = source.read(256*1024)
                 if data:
-                    self.say('输出 · '+label(spec))
+                    self.say('Mochi 输出：'+label(spec,job))
                     with (self.root/'log').open('ab') as target:
                         target.write(data)
                     old['offset'] += len(data)
@@ -203,7 +257,7 @@ class MeetingPoint:
         with contextlib.redirect_stdout(output):
             show_status(self.root,argparse.Namespace(json=False))
         beat = read_or(self.root/'worker.json',{}).get('updated_at',time.time())
-        status = output.getvalue()+'更新：'+time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(beat))+'\n'
+        status = output.getvalue()+'更新：'+timestamp(beat)+'\n'
         for name in ['command.sh','RUN']:
             rejected = self.signals.get(name,{})
             if rejected.get('state')=='REJECTED':
@@ -212,10 +266,13 @@ class MeetingPoint:
             core.atomic_write(self.root/'status.txt',status.encode())
             self.last_status = status
         newest = latest(self.root)
-        if newest:
+        if newest and newest.name in self.submissions:
             spec = core.read_json(newest/'request.json')
             receipt = dict(job=newest.name,label=spec['label'],revision=spec['revision'],
+                submission=self.submissions[newest.name]['number'],
                 state=core.read_json(newest/'status.json')['state'],
                 received=read_or(newest/'received.json',{}))
             if receipt != read_or(self.root/'receipt.json',None):
                 core.write_json(self.root/'receipt.json',receipt)
+
+# Codex（OpenAI）贡献：文件交接与自动回执、稳定提交编号、日志交互及隔离测试。
