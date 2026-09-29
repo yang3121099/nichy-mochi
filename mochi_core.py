@@ -23,7 +23,7 @@ import uuid
 import select
 
 TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "INTERRUPTED", "UNKNOWN", "PREEMPTED"}
-VERSION = "3.4.0"
+VERSION = "3.5.0"
 
 
 def read_json(path):
@@ -290,6 +290,7 @@ class Worker:
                              pid=os.getpid(), started_at=time.time(),
                              process_stamp=process_stamp(os.getpid()), version=VERSION)
         self.state, self.current, self.proc = "STARTING", None, None
+        self.phase = "starting"
         self.interrupted, self.last_beat = False, 0.0
         self.born = time.monotonic()
         self.guard_token = None
@@ -333,6 +334,8 @@ class Worker:
                     pass
             write_json(self.root / "worker.json", dict(self.identity, state=self.state,
                        revision=current.get("revision"), label=current.get("label"), pulse=bool(current.get("pulse")),
+                       phase=self.phase, supervisor_pid=self.proc.pid if self.proc else None,
+                       supervisor_alive=self.proc is not None and self.proc.poll() is None,
                        job=self.current.name if self.current else None, updated_at=time.time()))
             self.last_beat = time.monotonic()
 
@@ -390,6 +393,7 @@ class Worker:
         attempt = int(previous.get("attempt", 0)) + 1
         preemptions = int(previous.get("preemptions", 0))
         self.current, self.state = job, "RUNNING"
+        self.phase = "starting"
         self.heartbeat(True)
         started = time.time()
         set_state(job, "RUNNING", started_at=started, worker=self.identity,
@@ -436,6 +440,8 @@ class Worker:
                          spec["cwd"], str(self.args.grace), self.guard_token, str(local_limit)],
                         env=env, stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT,
                         start_new_session=True)
+                    self.phase = "running"
+                    self.heartbeat(True)
                     deadline = time.monotonic() + limit
                     while True:
                         returncode = self.proc.poll()
@@ -461,7 +467,13 @@ class Worker:
             detail = str(exc)
         finally:
             if self.proc is not None:
-                guard_result = self.finish_guard()
+                self.phase = "cleaning"
+                try:
+                    self.heartbeat(True)
+                except (OSError,ValueError,KeyError,TypeError):
+                    pass  # A display error must not prevent descendant cleanup.
+                finally:
+                    guard_result = self.finish_guard()
                 returncode = guard_result["returncode"]
                 if guard_result.get("error"):
                     outcome, detail = "FAILED", guard_result["error"]
@@ -470,6 +482,8 @@ class Worker:
         if self.current is not None:
             extras = dict(started_at=started, finished_at=time.time(), returncode=returncode,
                           detail=detail, attempt=attempt, preemptions=preemptions,
+                          cleanup_confirmed=guard_result.get('cleaned') if guard_result else None,
+                          guard_record='guard-'+self.guard_token+'.json' if guard_result else None,
                           revision=spec.get("revision"), label=spec.get("label"))
             if outcome == "PREEMPTED":
                 extras["preemptions"] += 1
@@ -479,6 +493,7 @@ class Worker:
             set_state(job, outcome, **extras)
             write_json(job / ("attempt-%04d.json" % attempt), dict(state=outcome, **extras))
         self.current, self.state = None, "IDLE"
+        self.phase = "idle"
         self.heartbeat(True)
 
     def run(self):
@@ -499,6 +514,7 @@ class Worker:
                     raise ValueError("发现未确认的 RUNNING 任务；请确认旧作业终止后使用 recover。")
             print("worker ready: " + str(self.root), flush=True)
             self.state = "IDLE"
+            self.phase = "idle"
             idle_since = time.monotonic()
             while True:
                 self.heartbeat()

@@ -1,4 +1,4 @@
-"""Bounded CUDA heartbeat. Scheduled by Nichy; never expands visible devices."""
+"""Preemptible CUDA heartbeat. Scheduled by Nichy; never expands visible devices."""
 import argparse
 import csv
 import json
@@ -109,9 +109,20 @@ if __name__ == '__main__':
     parser.add_argument('--seconds', type=float, default=10)
     parser.add_argument('--duty', type=float, default=.25)
     parser.add_argument('--uuid')
+    parser.add_argument('--continuous', action='store_true')
+    parser.add_argument('--load-worker', action='store_true')
+    parser.add_argument('--target', type=float, default=90)
     args=parser.parse_args()
     if args.probe:
         print(json.dumps(probe()))
+    elif args.load_worker:
+        from mochi_load import load_worker
+        load_worker(args.uuid)
+    elif args.continuous:
+        if not args.uuid or not 0<args.seconds<=86400 or not .01<=args.duty<=1 or not 76<=args.target<=100:
+            parser.error('continuous heartbeat requires allocated UUIDs and a valid target')
+        from mochi_load import continuous
+        continuous(args.uuid.split(','), args.seconds, args.target, args.duty)
     else:
         if not args.uuid or not 0 < args.seconds <= 120 or not .01 <= args.duty <= .25:
             parser.error('heartbeat requires an allocated UUID and bounded settings')

@@ -231,6 +231,15 @@ class MeetingTest(IntegrationTest):
         self.assertEqual(receipt['hour_submission'],1)
         self.assertRegex(receipt['submission_hour'],r'^\d{4}-\d{2}-\d{2}_\d{2}$')
         self.assertNotIn('+08:00',text)
+        self.wait_for(lambda:(self.root/'progress.json').exists() and
+            json.loads((self.root/'progress.json').read_text())['state']=='SUCCEEDED' and
+            '进程清理：已确认' in (self.root/'status.txt').read_text())
+        progress=json.loads((self.root/'progress.json').read_text())
+        self.assertEqual(progress['job'],receipt['job'])
+        self.assertEqual(progress['state'],'SUCCEEDED')
+        self.assertTrue(progress['cleanup_confirmed'])
+        self.assertEqual(progress['returncode'],0)
+        self.assertIn('进程清理：已确认',(self.root/'status.txt').read_text())
 
     def test_numbers_survive_restart_and_archived_jobs(self):
         import shutil

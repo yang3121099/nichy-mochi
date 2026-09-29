@@ -16,19 +16,14 @@ sys.path.insert(0, sys.argv[2])
 from nichy import queue_root
 from mochi_core import write_json, sync_dir
 from mochi_meeting import prepare
+from mochi_worker import DEFAULTS
 root = queue_root(sys.argv[1])
 prepare(root)
 config = root / 'config.json'
 if not config.exists():
     temporary = root / ('.config-' + uuid.uuid4().hex)
     try:
-        write_json(temporary, {
-            'enabled': True,
-            'interval': 1800,
-            'seconds': 10,
-            'idle_for': 30,
-            'duty': 0.25
-        })
+        write_json(temporary, DEFAULTS)
         try:
             os.link(temporary, config)
             sync_dir(root)

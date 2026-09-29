@@ -11,6 +11,7 @@ nichy-data/
   command.sh / RUN / STOP  # 文件交互入口
   log / status.txt         # 自动汇总的输出与状态
   receipt.json             # 最新提交的读取回执
+  progress.json            # 当前真实任务生命周期及进程清理确认
   submissions.tsv          # 编号、备份和任务索引
   backups/                 # command.sh 历史原文
   holidays.json            # 启动时读取的节假日与调休日历
@@ -45,13 +46,35 @@ supervisorctl status nichy-mochi
 
 ## 心跳
 
-同一个监听服务管理 GPU 心跳；状态变化记录在接头点的 `keep_alive.log`，当前状态见 `keep_alive.json`。程序与配置为 `keep_alive.py` 和 `config.json`，配置只在服务启动时读取。
+同一个监听服务管理 GPU 心跳。3.5 默认持续模式：启动后不再等待 30 秒，也不再每 30 分钟只跑 10 秒；通过可见设备检查和 CUDA 初始化后立即运行。对当前进程可见的每张 GPU 建立一个独立负载进程，用真实矩阵计算产生负载，每约 1 秒读取实际利用率，逐卡调节，目标为 90%。不扩大 `CUDA_VISIBLE_DEVICES` 的范围。
+
+有排队的真实任务时直接优先执行；检测到 `command.sh` 正在更新时也先让出。抢占先发送 SIGTERM，必要时由监督进程发送 SIGKILL；确认全部空闲子进程已经退出后才启动真实任务。真实任务运行期间不补载，结束后立即重新检查并恢复。空闲进程失败后稍作退避再尝试；无法确认清理完成时保留故障锁，不启动下一任务。
+
+平台外部进程开始使用任一可见 GPU 时，空闲组整体退出。外部进程退出后再恢复，避免在多卡训练初始化过程中争抢剩余 GPU。只终止本服务自己创建的空闲进程，不按名称扫描或杀死其他任务。无法获取设备指标、显存不足或设备仍被占用时暂缓。
+
+状态变化记录在接头点的 `keep_alive.log`，当前配置和空闲期间的逐卡采样见 `keep_alive.json`。`metrics.gpus` 包含当前利用率、调节后的占空比及最近最多 60 次采样的均值；这些是空闲阶段的数据，不等于平台统计的全任务平均值。新任务的数据加载或训练本身利用率低时，不通过争用资源来补足平均值。
+
+最简持续模式配置（接头点 `config.json`，重启读取）：
+
+```json
+{"enabled": true, "mode": "continuous", "target_utilization": 90}
+```
+
+更新项目后，旧版完全未修改的默认配置会自动按持续模式解释；明确关闭或自定义的旧配置保持原意。需要把自定义旧配置切换为持续模式时，改用上面的配置。旧版随项目提供的 `keep_alive.py` 会先备份到 `keep_alive.py.v3.4.bak`，再替换成新版；自定义脚本保留，需要支持新的持续模式参数。旧的间歇模式可通过 `mode: "pulse"` 及对应参数保留。
+
+利用率采用 NVIDIA `nvidia-smi` 的 `utilization.gpu` 采样，表示采样窗口中执行 GPU 内核的时间比例，不等于训练吞吐或 SM 占用率；见 [NVIDIA 指标说明](https://nvidia.custhelp.com/app/answers/detail/a_id/3751/kw/command)。空闲目标不是对任意真实任务全程平均值的保证。初始化、切换、外部任务和硬件状态也会影响结果。
 
 ## 任务语义
 
 提交先写入临时目录，内容和状态完整落盘后再原子发布。每次 `nichy run` 是独立任务；新提交排队，不会替换旧任务。默认运行超时为 24 小时，修改方式为 `nichy run --timeout 3600 hello.py`。`--wait` 等待显示也默认限一天，等待结束不会取消任务。
 
 读取回执与内容版本绑定。即便另一个任务正在运行，worker 仍读取并校验新提交。真正执行前再次校验，防止读取后快照被改变。历史回执表示那次确实读取过；是否仍在线由独立的 worker 心跳判断，超过 30 秒未更新显示无法联系。文件系统延迟会影响回执和在线状态的及时性。
+
+任务生命周期以 ID、监督进程及退出结果跟踪，不使用 GPU 利用率推断完成。`torchrun` 的加载数据、GPU 计算、保存 checkpoint 都属于同一次运行；即使 GPU 利用率为 0，空闲负载仍保持关闭。启动指令必须以前台方式运行；并行子任务应由脚本 `wait`，不能用 `nohup` 或后台启动后立即退出。
+
+`progress.json` 优先显示当前运行的真实任务，没有运行任务时显示最新提交。字段包括 `job`、`state`、`phase`（starting / running / cleaning 或结束状态）、`elapsed_seconds`、`supervisor_pid`、`supervisor_alive`、`cleanup_confirmed`、`returncode` 和原始日志路径。`receipt.json` 始终表示最新提交的读取回执，可能与当前运行任务不同。两个文件都有更新时间；停机后留下的旧文件不是当前在线证明。epoch / step / 百分比需由业务程序输出，Mochi 不从硬件指标猜测。
+
+结束时的 `jobs/<ID>/status.json` 记录 `cleanup_confirmed` 和 `guard_record`，后者关联本次监督进程的清理证明。只有启动脚本退出且进程树清理完成，才登记结束状态；恢复空闲负载时还要通过全部可见 GPU 的空闲、显存和计算进程检查。清理不确定时保留锁，等待人工核对。对于绕过 Mochi 启动的外部任务，只能检测它已经产生的 GPU 占用，无法识别它尚未使用 GPU 的准备阶段；需要完整生命周期保护的任务应通过 `command.sh` 提交。
 
 运行环境来自 GPU worker。提交端环境变量不透传到 GPU。任务中可用：
 

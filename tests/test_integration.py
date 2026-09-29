@@ -24,7 +24,8 @@ class IntegrationTest(QueueTest):
             return process
         first=launch()
         config=self.root/'config.json'
-        self.assertEqual(json.loads(config.read_text())['interval'],1800)
+        self.assertEqual(json.loads(config.read_text())['interval'],0)
+        self.assertEqual(json.loads(config.read_text())['mode'],'continuous')
         first.terminate();first.wait(10)
         custom='{"enabled":false,"interval":75}'
         config.write_text(custom)

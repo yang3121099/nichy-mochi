@@ -16,11 +16,12 @@ def main():
     parser.add_argument('--report', help='write a concise JSON test report')
     args = parser.parse_args()
     from test_extras import ExtrasTest
+    from test_load import LoadRulesTest, LoadProcessTest
     from test_client import ClientTest
     from test_dialogue import DialogueTest, HeartbeatRulesTest
     suite = unittest.TestSuite()
     loader = unittest.TestLoader()
-    for cls in [ClientTest, DialogueTest, HeartbeatRulesTest, ExtrasTest]:
+    for cls in [ClientTest, DialogueTest, HeartbeatRulesTest, ExtrasTest, LoadRulesTest, LoadProcessTest]:
         suite.addTests(loader.loadTestsFromTestCase(cls))
     if sys.platform.startswith('linux'):
         from test_robustness import RobustnessTest
@@ -34,7 +35,8 @@ def main():
             parser.error('--gpu requires Linux')
         from test_gpu import CudaTest
         from test_pulse_gpu import PulseTest
-        for cls in [CudaTest, PulseTest]:
+        from test_load_gpu import ContinuousGpuTest
+        for cls in [CudaTest, PulseTest, ContinuousGpuTest]:
             suite.addTests(cls(name) for name in cls.__dict__ if name.startswith('test_'))
     started = time.monotonic()
     result = unittest.TextTestRunner(verbosity=2).run(suite)

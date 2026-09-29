@@ -17,6 +17,7 @@ import mochi_core as core
 
 from mochi_extras import timestamp, submission_hour, submission_title, default_calendar, Reminders
 
+SHIPPED_HEARTBEATS = {'574a0f460c0b496b89aed7b5da62c88c25d6ab03e0c35401b8da0c668ad43aa1'}
 
 def read_or(path, default):
     try:
@@ -53,9 +54,17 @@ def file_fingerprint(path):
 
 
 def prepare(root):
-    # Files are initialized once. Existing commands, logs and heartbeat code stay intact.
+    # Preserve commands and logs; upgrade only an identified shipped heartbeat.
     create_once(root/'command.sh', b'# Write your launch commands here, save this file last to submit.\necho "Hello, Mochi"\n')
     create_once(root/'keep_alive.py', Path(__file__).with_name('keep_alive.py').read_bytes())
+    local = root/'keep_alive.py'
+    # Only replace the known shipped 3.4 helper; user-written helpers stay intact.
+    if not local.is_symlink() and hashlib.sha256(local.read_bytes()).hexdigest() in SHIPPED_HEARTBEATS:
+        backup=root/'keep_alive.py.v3.4.bak'
+        create_once(backup,local.read_bytes())
+        if backup.read_bytes()!=local.read_bytes():
+            raise ValueError('已有心跳备份内容不同，请检查 keep_alive.py.v3.4.bak')
+        core.atomic_write(local,Path(__file__).with_name('keep_alive.py').read_bytes())
     create_once(root/'log',b'')
     create_once(root/'holidays.json',json.dumps(default_calendar(),ensure_ascii=False,indent=2).encode())
 
@@ -299,11 +308,39 @@ class MeetingPoint:
                 changed = True
         if changed:
             core.write_json(self.root/'.views.json',self.views)
+        newest = latest(self.root)
+        active = self.worker.current
+        if active is None or active.parent != self.root/'jobs':
+            active = newest
+        progress = None
+        if active and active.name in self.submissions:
+            state = core.read_json(active/'status.json')
+            running = active == self.worker.current
+            phase = self.worker.phase if running else state['state'].lower()
+            end = state.get('finished_at',time.time())
+            started = state.get('started_at')
+            proc = self.worker.proc if running else None
+            progress = dict(job=active.name,submission_label=submission_title(self.submissions[active.name]),
+                state=state['state'],phase=phase,updated_at=time.time(),
+                elapsed_seconds=round(max(0,end-started),1) if started else 0,
+                supervisor_pid=proc.pid if proc else None,
+                supervisor_alive=proc is not None and proc.poll() is None,
+                cleanup_confirmed=state.get('cleanup_confirmed'),guard_record=state.get('guard_record'),
+                returncode=state.get('returncode'),log=str(active/'run.log'))
+            core.write_json(self.root/'progress.json',progress)
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             show_status(self.root,argparse.Namespace(json=False))
         beat = read_or(self.root/'worker.json',{}).get('updated_at',time.time())
         status = output.getvalue()+'更新：'+timestamp(beat)+'\n'
+        if progress:
+            phases={'starting':'启动中','running':'运行中','cleaning':'收尾中','pending':'排队中',
+                    'succeeded':'已完成','failed':'失败','cancelled':'已取消','timed_out':'超时',
+                    'interrupted':'中断','unknown':'待确认','preempted':'已让出'}
+            status += '任务 ID：'+progress['job']+'\n阶段：'+phases.get(progress['phase'],progress['phase'])
+            status += ' · 已用 '+str(int(progress['elapsed_seconds']))+' 秒\n'
+            if progress['cleanup_confirmed'] is True:
+                status += '进程清理：已确认\n'
         for name in ['command.sh','RUN']:
             rejected = self.signals.get(name,{})
             if rejected.get('state')=='REJECTED':
@@ -311,7 +348,6 @@ class MeetingPoint:
         if status != self.last_status:
             core.atomic_write(self.root/'status.txt',status.encode())
             self.last_status = status
-        newest = latest(self.root)
         if newest and newest.name in self.submissions:
             spec = core.read_json(newest/'request.json')
             receipt = dict(job=newest.name,label=spec['label'],revision=spec['revision'],
