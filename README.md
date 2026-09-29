@@ -69,6 +69,14 @@ tail -F /users/nichy/code/start/log
 
 `torchrun` 应在 `command.sh` 中以前台方式运行，不加 `nohup` 或末尾 `&`；需要并行启动子任务时，脚本必须用 `wait` 等待它们完成。Mochi 会在启动脚本退出后清理残留子进程。
 
+不同卡数的单机训练，可以在 `command.sh` 中使用：
+
+```bash
+cd /users/nichy/code && torchrun --standalone --nnodes=1 --nproc-per-node=gpu main.py
+```
+
+PyTorch 的 `gpu` 参数按当前可见 GPU 数量启动进程，不再写死 8；训练代码仍需支持对应的 DDP 规模。Mochi 每次启动重新识别设备，单个监听服务管理本机已分配的一组 GPU。多台机器分别运行时，各用独立接头点；多节点联合训练、MIG/MPS 及具体验证边界见 [换机与多卡说明](docs/PORTABILITY.md)。
+
 高级配置与兼容命令见 [运行说明](docs/ADMIN.md)，验证范围见 [测试记录](docs/TESTING.md)。
 
 MIT License.

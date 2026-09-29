@@ -11,7 +11,12 @@ import sys
 import time
 
 
-def gpu_stats():
+def gpu_stats(visible=None):
+    # nvidia-smi can list host devices outside CUDA_VISIBLE_DEVICES. Ignore
+    # their unsupported counters, but fail closed for any allocated device.
+    selected = None if visible is None else set(visible)
+    if selected == set():
+        return {}
     def query(fields, kind):
         p = subprocess.run(['nvidia-smi', '--query-'+kind+'='+fields,
                             '--format=csv,noheader,nounits'], capture_output=True,
@@ -19,13 +24,21 @@ def gpu_stats():
         return list(csv.reader(p.stdout.splitlines(), skipinitialspace=True))
     cards = {}
     for uid, util, total, used in query('uuid,utilization.gpu,memory.total,memory.used', 'gpu'):
+        if selected is not None and uid not in selected:
+            continue
         u, t, m = float(util), float(total), float(used)
-        if not all(math.isfinite(x) for x in [u,t,m]) or t <= 0:
+        if (uid in cards or not all(math.isfinite(x) for x in [u,t,m])
+                or not 0 <= u <= 100 or t <= 0 or not 0 <= m <= t):
             raise ValueError('GPU telemetry unavailable')
         cards[uid] = dict(uuid=uid, utilization=u, free_percent=(t-m)*100/t, processes=[])
+    if selected is not None and selected != set(cards):
+        raise ValueError('allocated GPU telemetry missing')
     for uid, pid in query('gpu_uuid,pid', 'compute-apps'):
         if uid in cards:
-            cards[uid]['processes'].append(int(pid))
+            pid = int(pid)
+            if pid <= 0:
+                raise ValueError('GPU process telemetry unavailable')
+            cards[uid]['processes'].append(pid)
     return cards
 
 
@@ -62,7 +75,7 @@ def pulse(seconds, duty, expected):
     if visible != [expected]:
         raise ValueError('heartbeat device mapping changed')
     job = Path(os.environ['GPUQ_JOB_DIR'])
-    card = gpu_stats().get(expected)
+    card = gpu_stats([expected]).get(expected)
     # probe may initialize CUDA, but does not allocate our tensors yet.
     if card is None or card['utilization'] >= 20 or card['free_percent'] <= 60 or len(card['processes']) > 1:
         write_json(job/'pulse-result.json', dict(status='skipped-busy', cycles=0,
@@ -81,7 +94,7 @@ def pulse(seconds, duty, expected):
         if time.monotonic()-sampled >= .5:
             sampled = time.monotonic()
             try:
-                card = gpu_stats()[expected]
+                card = gpu_stats([expected])[expected]
             except (OSError, ValueError, KeyError, subprocess.SubprocessError):
                 status = 'telemetry-unavailable'; break
             if demand(card):

@@ -137,7 +137,7 @@ class NichyWorker(Worker):
             return None
         self.pulse_last_sample=time.monotonic()
         try:
-            candidates=eligible(gpu_stats(),self.visible)
+            candidates=eligible(gpu_stats(self.visible),self.visible)
         except (OSError,ValueError,subprocess.SubprocessError):
             self.quiet_samples=0
             self.pulse_next=time.monotonic()+(2 if c['mode']=='continuous' else 30)

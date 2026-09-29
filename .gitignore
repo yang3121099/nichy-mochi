@@ -31,5 +31,5 @@ submissions.tsv
 backups/
 holidays.json
 .reminders.json
-keep_alive.py.v3.4.bak
+keep_alive.py.v*.bak
 progress.json

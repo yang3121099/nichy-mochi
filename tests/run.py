@@ -17,12 +17,14 @@ def main():
     args = parser.parse_args()
     from test_extras import ExtrasTest
     from test_load import LoadRulesTest, LoadProcessTest
+    from test_portability import PortabilityRulesTest, MultiCardProcessTest
     from test_client import ClientTest
     from test_dialogue import DialogueTest, HeartbeatRulesTest
     suite = unittest.TestSuite()
     loader = unittest.TestLoader()
-    for cls in [ClientTest, DialogueTest, HeartbeatRulesTest, ExtrasTest, LoadRulesTest, LoadProcessTest]:
+    for cls in [ClientTest, DialogueTest, HeartbeatRulesTest, ExtrasTest, LoadRulesTest, LoadProcessTest, PortabilityRulesTest]:
         suite.addTests(loader.loadTestsFromTestCase(cls))
+    suite.addTests(MultiCardProcessTest(name) for name in MultiCardProcessTest.__dict__ if name.startswith('test_'))
     if sys.platform.startswith('linux'):
         from test_robustness import RobustnessTest
         from test_integration import IntegrationTest

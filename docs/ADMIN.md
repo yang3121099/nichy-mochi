@@ -60,7 +60,9 @@ supervisorctl status nichy-mochi
 {"enabled": true, "mode": "continuous", "target_utilization": 90}
 ```
 
-更新项目后，旧版完全未修改的默认配置会自动按持续模式解释；明确关闭或自定义的旧配置保持原意。需要把自定义旧配置切换为持续模式时，改用上面的配置。旧版随项目提供的 `keep_alive.py` 会先备份到 `keep_alive.py.v3.4.bak`，再替换成新版；自定义脚本保留，需要支持新的持续模式参数。旧的间歇模式可通过 `mode: "pulse"` 及对应参数保留。
+更新项目后，旧版完全未修改的默认配置会自动按持续模式解释；明确关闭或自定义的旧配置保持原意。需要把自定义旧配置切换为持续模式时，改用上面的配置。已知随项目提供的旧 `keep_alive.py` 会先按原版号备份到 `keep_alive.py.v3.4.bak` 或 `keep_alive.py.v3.5.0.bak`，再替换成新版；自定义脚本保留，需要支持新的持续模式参数。旧的间歇模式可通过 `mode: "pulse"` 及对应参数保留。
+
+设备以 CUDA 运行时识别出的 UUID 为准，每次服务启动重新检测。3.5.1 起仅解析已分配卡的指标，宿主机其他卡返回 `N/A` 不会阻断本组；已分配卡的指标缺失或无效仍暂停整组空闲负载。多卡、独立多机和迁移边界见 [换机与多卡说明](PORTABILITY.md)。
 
 利用率采用 NVIDIA `nvidia-smi` 的 `utilization.gpu` 采样，表示采样窗口中执行 GPU 内核的时间比例，不等于训练吞吐或 SM 占用率；见 [NVIDIA 指标说明](https://nvidia.custhelp.com/app/answers/detail/a_id/3751/kw/command)。空闲目标不是对任意真实任务全程平均值的保证。初始化、切换、外部任务和硬件状态也会影响结果。
 

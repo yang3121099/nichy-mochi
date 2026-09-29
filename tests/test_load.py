@@ -107,7 +107,7 @@ class LoadRulesTest(unittest.TestCase):
     def test_known_old_helper_upgrades_with_exact_backup(self):
         old=b'# old shipped helper fixture\n'
         (self.root/'keep_alive.py').write_bytes(old)
-        with mock.patch.object(meeting,'SHIPPED_HEARTBEATS',{hashlib.sha256(old).hexdigest()}):
+        with mock.patch.object(meeting,'SHIPPED_HEARTBEATS',{hashlib.sha256(old).hexdigest():'3.4'}):
             prepare(self.root)
             prepare(self.root)
         self.assertEqual((self.root/'keep_alive.py.v3.4.bak').read_bytes(),old)
@@ -139,7 +139,7 @@ for line in sys.stdin:
     def tearDown(self):
         self.temp.cleanup()
 
-    def telemetry(self):
+    def telemetry(self, visible=None):
         result=cards(self.uuids,95)
         for slot,uid in enumerate(self.uuids):
             path=self.root/('load-%d-ready.json'%slot)
@@ -168,7 +168,7 @@ for line in sys.stdin:
     def test_external_process_is_never_killed(self):
         other=subprocess.Popen([sys.executable,'-c','import time;time.sleep(20)'])
         try:
-            def sampler():
+            def sampler(visible=None):
                 result=self.telemetry()
                 if (self.root/'pulse-ready.json').exists():
                     result[self.uuids[0]]['processes'].append(other.pid)
@@ -181,7 +181,7 @@ for line in sys.stdin:
             other.terminate();other.wait(5)
 
     def test_telemetry_failure_cleans_every_child(self):
-        def sampler():
+        def sampler(visible=None):
             if (self.root/'pulse-ready.json').exists():raise ValueError('simulated telemetry failure')
             return self.telemetry()
         with self.assertRaises(RuntimeError):self.run_controller(sampler,seconds=8)

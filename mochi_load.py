@@ -74,7 +74,7 @@ def continuous(uuids, seconds, target, initial_duty=1):
     ready = False
     status = 'complete'
     try:
-        cards = gpu_stats()
+        cards = gpu_stats(uuids)
         if len(eligible(cards,uuids)) != len(uuids):
             status = 'skipped-busy'
             return
@@ -89,7 +89,7 @@ def continuous(uuids, seconds, target, initial_duty=1):
             if len(children)!=len(uuids) or any(child.poll() is not None for child in children):
                 status = 'child-failed'
                 break
-            cards = gpu_stats()
+            cards = gpu_stats(uuids)
             reason = busy_reason(cards,uuids,owners)
             if reason:
                 status = reason

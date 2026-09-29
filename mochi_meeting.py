@@ -17,7 +17,10 @@ import mochi_core as core
 
 from mochi_extras import timestamp, submission_hour, submission_title, default_calendar, Reminders
 
-SHIPPED_HEARTBEATS = {'574a0f460c0b496b89aed7b5da62c88c25d6ab03e0c35401b8da0c668ad43aa1'}
+SHIPPED_HEARTBEATS = {
+    '574a0f460c0b496b89aed7b5da62c88c25d6ab03e0c35401b8da0c668ad43aa1': '3.4',
+    'e52b3ea0b2e271a5dbc39c3c207a18f3d3463417f54bb4143332bb7595fb1881': '3.5.0',
+}
 
 def read_or(path, default):
     try:
@@ -58,12 +61,13 @@ def prepare(root):
     create_once(root/'command.sh', b'# Write your launch commands here, save this file last to submit.\necho "Hello, Mochi"\n')
     create_once(root/'keep_alive.py', Path(__file__).with_name('keep_alive.py').read_bytes())
     local = root/'keep_alive.py'
-    # Only replace the known shipped 3.4 helper; user-written helpers stay intact.
-    if not local.is_symlink() and hashlib.sha256(local.read_bytes()).hexdigest() in SHIPPED_HEARTBEATS:
-        backup=root/'keep_alive.py.v3.4.bak'
+    # Only replace known shipped helpers; user-written helpers stay intact.
+    version = SHIPPED_HEARTBEATS.get(hashlib.sha256(local.read_bytes()).hexdigest())
+    if not local.is_symlink() and version:
+        backup=root/('keep_alive.py.v'+version+'.bak')
         create_once(backup,local.read_bytes())
         if backup.read_bytes()!=local.read_bytes():
-            raise ValueError('已有心跳备份内容不同，请检查 keep_alive.py.v3.4.bak')
+            raise ValueError('已有心跳备份内容不同，请检查 '+backup.name)
         core.atomic_write(local,Path(__file__).with_name('keep_alive.py').read_bytes())
     create_once(root/'log',b'')
     create_once(root/'holidays.json',json.dumps(default_calendar(),ensure_ascii=False,indent=2).encode())
